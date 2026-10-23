@@ -1,0 +1,26 @@
+import 'dotenv/config';
+import fs from 'node:fs';
+import express from 'express';
+import helmet from 'helmet';
+import cookieParser from 'cookie-parser';
+import rateLimit from 'express-rate-limit';
+import env from './config.js';
+import {pool} from './db/pool.js';
+import auth from './routes/auth.js';
+import dashboard from './routes/dashboard.js';
+import uploads from './routes/uploads.js';
+import jobs from './routes/jobs.js';
+import oauth from './routes/oauth.js';
+import {notFound,errorHandler} from './middleware/errors.js';
+import {startWorker,stopWorker} from './jobs/worker.js';
+fs.mkdirSync(env.UPLOAD_DIR,{recursive:true});
+const app=express();app.disable('x-powered-by');app.set('trust proxy',env.NODE_ENV==='production'?1:false);
+app.use(helmet({contentSecurityPolicy:false}));app.use(express.json({limit:'100kb'}));app.use(cookieParser());
+app.use(rateLimit({windowMs:60000,limit:120,standardHeaders:true,legacyHeaders:false}));
+app.use(express.static(new URL('../public',import.meta.url).pathname));
+app.get('/api/health',async(_req,res)=>{let database='not_configured';if(pool)try{await pool.query('SELECT 1');database='connected'}catch{database='unavailable'}res.status(database==='unavailable'?503:200).json({status:database==='unavailable'?'degraded':'ok',app:env.APP_NAME,environment:env.NODE_ENV,database,timestamp:new Date().toISOString()});});
+app.get('/api',(_req,res)=>res.json({name:env.APP_NAME,version:'1.0.0',capabilities:{adminAuth:true,uploads:true,jobQueue:true,youtubeAdapter:true,tiktokPublishing:false,facebookPublishing:false},note:'OAuth account persistence and provider final-status polling are incomplete.'}));
+app.use('/api/auth',auth);app.use('/api/dashboard',dashboard);app.use('/api/uploads',uploads);app.use('/api/jobs',jobs);app.use('/api/oauth',oauth);app.use(notFound);app.use(errorHandler);
+const server=app.listen(env.PORT,env.HOST,()=>{console.log(`${env.APP_NAME} listening on ${env.HOST}:${env.PORT}`);startWorker();});
+async function shutdown(signal){console.log(`Received ${signal}; shutting down.`);stopWorker();server.close(async()=>{if(pool)await pool.end().catch(()=>{});process.exit(0)});setTimeout(()=>process.exit(1),10000).unref();}
+process.on('SIGINT',()=>shutdown('SIGINT'));process.on('SIGTERM',()=>shutdown('SIGTERM'));
